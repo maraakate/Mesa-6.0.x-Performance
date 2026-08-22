@@ -1,0 +1,35 @@
+diff -urNp Mesa-6.0.1/src/mesa/Makefile.DJ Mesa-6.0.x/src/mesa/Makefile.DJ
+--- Mesa-6.0.1/src/mesa/Makefile.DJ	2016-02-25 07:55:00.000000000 +0200
++++ Mesa-6.0.x/src/mesa/Makefile.DJ	2016-03-21 22:41:50.000000000 +0200
+@@ -71,11 +71,15 @@ GL_IMP = libigl.a
+ HOST_CC = gcc
+ CC = gcc
+ CFLAGS += -I$(TOP)/include -I. -Imain -Iglapi
++DXE_EXPORTS= -E _gl -X _gl_ -X _glb
++DXE_EXPORTS+= -E _DMesa
+ ifeq ($(FX),1)
+ CFLAGS += -D__DOS__ -DH3
+ CFLAGS += -I$(GLIDE)/include -DFX
++DXE_DEPS= -P glide3x.dxe
+ LIBNAME = "Mesa/FX DJGPP"
+ else
++DXE_DEPS=
+ LIBNAME = "Mesa DJGPP"
+ endif
+ 
+@@ -185,13 +189,11 @@ all: $(LIBDIR)/$(GL_LIB) $(LIBDIR)/$(GL_
+ $(LIBDIR)/$(GL_LIB): $(OBJECTS)
+ 	$(AR) $(ARFLAGS) $@ $^
+ 
+-$(LIBDIR)/$(GL_DXE) $(LIBDIR)/$(GL_IMP): $(OBJECTS)
+ ifeq ($(FX),1)
+ $(LIBDIR)/$(GL_DXE) $(LIBDIR)/$(GL_IMP): glide3x.dxe
+-	-dxe3gen -o $(LIBDIR)/$(GL_DXE) -Y $(LIBDIR)/$(GL_IMP) -D $(LIBNAME) -E _gl -X _gl_ -E _DMesa -P glide3x.dxe -U $(OBJECTS)
+-else
+-	-dxe3gen -o $(LIBDIR)/$(GL_DXE) -Y $(LIBDIR)/$(GL_IMP) -D $(LIBNAME) -E _gl -X _gl_ -E _DMesa -U $^
+ endif
++$(LIBDIR)/$(GL_DXE) $(LIBDIR)/$(GL_IMP): $(OBJECTS)
++	-dxe3gen -o $(LIBDIR)/$(GL_DXE) -Y $(LIBDIR)/$(GL_IMP) -D $(LIBNAME) $(DXE_EXPORTS) $(DXE_DEPS) -U $(OBJECTS)
+ 
+ $(X86_OBJECTS): x86/matypes.h
+ 
