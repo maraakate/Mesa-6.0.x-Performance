@@ -89,15 +89,25 @@ fxPrintTextureData(tfxTexInfo * ti)
 /************************************************************************/
 
 static void
-fxTexInvalidate(GLcontext * ctx, struct gl_texture_object *tObj)
+fxTexInvalidate(GLcontext * ctx, struct gl_texture_object *tObj, tfxInvalidateReason reason)
 {
    fxMesaContext fxMesa = FX_CONTEXT(ctx);
    tfxTexInfo *ti;
 
    ti = fxTMGetTexInfo(tObj);
-   if (ti->isInTM)
-      fxTMMoveOutTM(fxMesa, tObj);	/* TO DO: SLOW but easy to write */
+   /* OLD WAY */
+   // if (ti->isInTM)
+   //    fxTMMoveOutTM(fxMesa, tObj);	/* TO DO: SLOW but easy to write */
 
+   if (!fxMesa->keepResidentOnInvalidate || (reason & (INVALIDATE_PARAMS | INVALIDATE_PALETTE | INVALIDATE_DATA)))
+   {
+	   if (ti->isInTM)
+	   {
+		   fxTMMoveOutTM(fxMesa, tObj);
+	   }
+   }
+
+   /* Mark for revalidation; fxSetup path will reload or reallocate as needed */
    ti->validated = GL_FALSE;
    fxMesa->new_state |= FX_NEW_TEXTURING;
 }
@@ -129,6 +139,19 @@ fxAllocTexObjData(fxMesaContext fxMesa)
 
    ti->mmMode = GR_MIPMAP_NEAREST;
    ti->LODblend = FXFALSE;
+
+   /* Initialize scale factors to safe defaults for bind-before-gen case*/
+   /* 256.0F is a safe identity default, It maps a 1.0 OpenGL coordinate to a full Glide texture span, prevents division with 0 */
+   ti->tScale = 256.0F;
+   ti->sScale = 256.0F;
+
+   /* Initialize TMU affinity fields */
+   ti->upload_stamp[0] = 0; /* not uploaded */
+   ti->upload_stamp[1] = 0; /* not uploaded */
+
+   /* initialize per-frame duplicate suppression */
+   ti->last_uploaded_level[0] = -1;
+   ti->last_uploaded_level[1] = -1;
 
    return ti;
 }
@@ -184,6 +207,7 @@ fxDDTexEnv(GLcontext * ctx, GLenum target, GLenum pname,
    fxMesa->new_state |= FX_NEW_TEXTURING;
 }
 
+/* Texture filtering mode also here */
 void
 fxDDTexParam(GLcontext * ctx, GLenum target, struct gl_texture_object *tObj,
 	     GLenum pname, const GLfloat * params)
@@ -276,7 +300,7 @@ fxDDTexParam(GLcontext * ctx, GLenum target, struct gl_texture_object *tObj,
       default:
 	 break;
       }
-      fxTexInvalidate(ctx, tObj);
+      fxTexInvalidate(ctx, tObj, INVALIDATE_NONE);
       break;
 
    case GL_TEXTURE_MAG_FILTER:
@@ -290,8 +314,8 @@ fxDDTexParam(GLcontext * ctx, GLenum target, struct gl_texture_object *tObj,
       default:
 	 break;
       }
-      fxTexInvalidate(ctx, tObj);
-      break;
+	  fxMesa->new_state |= FX_NEW_TEXTURING;
+	  break;
 
    case GL_TEXTURE_WRAP_S:
       switch (param) {
@@ -340,10 +364,10 @@ fxDDTexParam(GLcontext * ctx, GLenum target, struct gl_texture_object *tObj,
       /* TO DO */
       break;
    case GL_TEXTURE_BASE_LEVEL:
-      fxTexInvalidate(ctx, tObj);
+      fxTexInvalidate(ctx, tObj, INVALIDATE_PARAMS);
       break;
    case GL_TEXTURE_MAX_LEVEL:
-      fxTexInvalidate(ctx, tObj);
+      fxTexInvalidate(ctx, tObj, INVALIDATE_PARAMS);
       break;
 
    default:
@@ -470,7 +494,7 @@ fxDDTexPalette(GLcontext * ctx, struct gl_texture_object *tObj)
 	 tObj->DriverData = fxAllocTexObjData(fxMesa);
       ti = fxTMGetTexInfo(tObj);
       ti->paltype = convertPalette(fxMesa, ti->palette.data, &tObj->Palette);
-      fxTexInvalidate(ctx, tObj);
+      fxTexInvalidate(ctx, tObj, INVALIDATE_DATA);
    }
    else {
       /* global texture palette */
@@ -507,7 +531,7 @@ fxDDTexUseGlbPalette(GLcontext * ctx, GLboolean state)
 	 if (!tObj->DriverData)
 	    tObj->DriverData = fxAllocTexObjData(fxMesa);
 
-	 fxTexInvalidate(ctx, tObj);
+	 fxTexInvalidate(ctx, tObj, INVALIDATE_DATA);
       }
    }
 }
@@ -1400,7 +1424,7 @@ fxDDTexImage2D(GLcontext * ctx, GLenum target, GLint level,
    }
    else {
       /*fprintf(stderr, "invalidate2\n"); */
-      fxTexInvalidate(ctx, texObj);
+      fxTexInvalidate(ctx, texObj, INVALIDATE_DATA);
    }
 }
 
@@ -1489,13 +1513,38 @@ fxDDTexSubImage2D(GLcontext * ctx, GLenum target, GLint level,
                               format, type, pixels, packing);
    }
 
-   /* [dBorca]
-    * Hack alert: unsure...
-    */
-   if (0 && ti->validated && ti->isInTM)
-      fxTMReloadMipMapLevel(fxMesa, texObj, level);
+   if (ti->validated && ti->isInTM && !texObj->GenerateMipmap)
+   {
+	   /* Prefer partial row uploads whenever possible for uncompressed formats.
+	   Glide's partial API uploads whole rows between [y0, y0+h), so we always
+	   ship full rows for the affected y-range regardless of xoffset/width. */
+	   if (!texImage->IsCompressed)
+	   {
+		   GLint y0 = yoffset * mml->hScale;
+		   GLint h = height * mml->hScale;
+		   if (h < 1)
+			   h = 1;
+		   if (y0 < 0)
+			   y0 = 0;
+		   if (y0 + h > mml->height)
+			   h = mml->height - y0;
+		   if (h > 0)
+		   {
+			   fxTMReloadSubMipMapLevel(fxMesa, texObj, level, y0, h);
+		   }
+		   else
+		   {
+			   fxTMReloadMipMapLevel(fxMesa, texObj, level);
+		   }
+	   }
+	   else
+	   {
+		   /* Compressed formats: no row-partial API, upload full level */
+		   fxTMReloadMipMapLevel(fxMesa, texObj, level);
+	   }
+   }
    else
-      fxTexInvalidate(ctx, texObj);
+	   fxTexInvalidate(ctx, texObj, INVALIDATE_NONE);
 }
 
 
@@ -1609,13 +1658,13 @@ fxDDCompressedTexImage2D (GLcontext *ctx, GLenum target,
    /* [dBorca]
     * Hack alert: unsure...
     */
-   if (0 && ti->validated && ti->isInTM) {
+   if (ti->validated && ti->isInTM) {
       /*fprintf(stderr, "reloadmipmaplevels\n"); */
       fxTMReloadMipMapLevel(fxMesa, texObj, level);
    }
    else {
       /*fprintf(stderr, "invalidate2\n"); */
-      fxTexInvalidate(ctx, texObj);
+      fxTexInvalidate(ctx, texObj, INVALIDATE_DATA);
    }
 }
 
@@ -1665,10 +1714,10 @@ fxDDCompressedTexSubImage2D( GLcontext *ctx, GLenum target,
    /* [dBorca]
     * Hack alert: unsure...
     */
-   if (0 && ti->validated && ti->isInTM)
+   if (ti->validated && ti->isInTM)
       fxTMReloadMipMapLevel(fxMesa, texObj, level);
    else
-      fxTexInvalidate(ctx, texObj);
+      fxTexInvalidate(ctx, texObj, INVALIDATE_DATA);
 }
 
 

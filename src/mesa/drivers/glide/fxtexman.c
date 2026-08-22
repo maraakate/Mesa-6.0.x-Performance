@@ -452,7 +452,9 @@ fxTMMoveInTM_NoLock(fxMesaContext fxMesa, struct gl_texture_object *tObj,
 					    GR_MIPMAPLEVELMASK_BOTH,
 					    texImage->Data);
       }
-      break;
+	  /* Pin and stamp after full upload */
+	  ti->upload_stamp[where] = fxMesa->frame_no;
+	  break;
    case FX_TMU_SPLIT:
       texmemsize = (int)grTexTextureMemRequired(GR_MIPMAPLEVELMASK_ODD, &(ti->info));
       ti->tm[FX_TMU0] = fxTMAddObj(fxMesa, tObj, FX_TMU0, texmemsize);
@@ -484,7 +486,10 @@ fxTMMoveInTM_NoLock(fxMesaContext fxMesa, struct gl_texture_object *tObj,
 					    GR_MIPMAPLEVELMASK_EVEN,
 					    texImage->Data);
       }
-      break;
+	  /* Pin and stamp after full upload */
+	  ti->upload_stamp[FX_TMU0] = fxMesa->frame_no;
+	  ti->upload_stamp[FX_TMU1] = fxMesa->frame_no;
+	  break;
    case FX_TMU_BOTH:
       texmemsize = (int)grTexTextureMemRequired(GR_MIPMAPLEVELMASK_BOTH, &(ti->info));
       ti->tm[FX_TMU0] = fxTMAddObj(fxMesa, tObj, FX_TMU0, texmemsize);
@@ -515,7 +520,10 @@ fxTMMoveInTM_NoLock(fxMesaContext fxMesa, struct gl_texture_object *tObj,
 					    GR_MIPMAPLEVELMASK_BOTH,
 					    texImage->Data);
       }
-      break;
+	  /* Pin and stamp after full upload */
+	  ti->upload_stamp[FX_TMU0] = fxMesa->frame_no;
+	  ti->upload_stamp[FX_TMU1] = fxMesa->frame_no;
+	  break;
    default:
       fprintf(stderr, "fxTMMoveInTM_NoLock: INTERNAL ERROR: wrong tmu (%d)\n", where);
       fxCloseHardware();
@@ -578,6 +586,24 @@ fxTMReloadMipMapLevel(fxMesaContext fxMesa, struct gl_texture_object *tObj,
 
    lodlevel =  ti->info.largeLodLog2 - (level - ti->minLevel);
 
+   /* Per-frame duplicate upload suppression for full-level reloads:
+	* If the same level on the same TMU was already uploaded this frame, skip.
+	* Reset the per-frame markers when we see a new frame. */
+   if (tmu == FX_TMU0 || tmu == FX_TMU1)
+   {
+	   if (ti->upload_stamp[tmu] != fxMesa->frame_no)
+	   {
+		   ti->last_uploaded_level[0] = -1;
+		   ti->last_uploaded_level[1] = -1;
+	   }
+	   else if (ti->last_uploaded_level[tmu] == level)
+	   {
+		   // fprintf(stderr, "UPLOAD_REASON skip_duplicate_level name=%d level=%d tmuMode=%d\n",
+		   //         tObj->Name, (int)level, (int)tmu);
+		   return;
+	   }
+   }
+
    switch (tmu) {
    case FX_TMU0:
    case FX_TMU1:
@@ -588,7 +614,9 @@ fxTMReloadMipMapLevel(fxMesaContext fxMesa, struct gl_texture_object *tObj,
 				  FX_aspectRatioLog2(ti->info),
 				  ti->info.format,
 				  GR_MIPMAPLEVELMASK_BOTH, texImage->Data);
-      break;
+	  ti->upload_stamp[tmu] = fxMesa->frame_no;
+	  ti->last_uploaded_level[tmu] = level;
+	  break;
    case FX_TMU_SPLIT:
       grTexDownloadMipMapLevel(GR_TMU0,
 				  ti->tm[GR_TMU0]->startAddr,
@@ -605,7 +633,11 @@ fxTMReloadMipMapLevel(fxMesaContext fxMesa, struct gl_texture_object *tObj,
 				  FX_aspectRatioLog2(ti->info),
 				  ti->info.format,
 				  GR_MIPMAPLEVELMASK_EVEN, texImage->Data);
-      break;
+	  ti->upload_stamp[FX_TMU0] = fxMesa->frame_no;
+	  ti->upload_stamp[FX_TMU1] = fxMesa->frame_no;
+	  ti->last_uploaded_level[FX_TMU0] = level;
+	  ti->last_uploaded_level[FX_TMU1] = level;
+	  break;
    case FX_TMU_BOTH:
       grTexDownloadMipMapLevel(GR_TMU0,
 				  ti->tm[GR_TMU0]->startAddr,
@@ -622,7 +654,11 @@ fxTMReloadMipMapLevel(fxMesaContext fxMesa, struct gl_texture_object *tObj,
 				  FX_aspectRatioLog2(ti->info),
 				  ti->info.format,
 				  GR_MIPMAPLEVELMASK_BOTH, texImage->Data);
-      break;
+	  ti->upload_stamp[FX_TMU0] = fxMesa->frame_no;
+	  ti->upload_stamp[FX_TMU1] = fxMesa->frame_no;
+	  ti->last_uploaded_level[FX_TMU0] = level;
+	  ti->last_uploaded_level[FX_TMU1] = level;
+	  break;
 
    default:
       fprintf(stderr, "fxTMReloadMipMapLevel: INTERNAL ERROR: wrong tmu (%d)\n", tmu);
@@ -651,18 +687,44 @@ fxTMReloadSubMipMapLevel(fxMesaContext fxMesa,
       exit(-1);
    }
 
-   tmu = (int) ti->whichTMU;
-   fxTMMoveInTM(fxMesa, tObj, tmu);
+   /* Ensure residency only if needed */
+   tmu = (int)ti->whichTMU;
+   if (!ti->isInTM || ti->tm[tmu] == NULL)
+   {
+	   fxTMMoveInTM(fxMesa, tObj, tmu);
+   }
 
-   fxTexGetInfo(mml->width, mml->height,
-		&lodlevel, NULL, NULL, NULL, NULL, NULL);
+   /* Compute lod level consistent with full uploads */
+   lodlevel = ti->info.largeLodLog2 - (level - ti->minLevel);
 
-   if ((ti->info.format == GR_TEXFMT_INTENSITY_8) ||
-       (ti->info.format == GR_TEXFMT_P_8) ||
-       (ti->info.format == GR_TEXFMT_ALPHA_8))
-	 data = (GLushort *) texImage->Data + ((yoffset * mml->width) >> 1);
-   else
-      data = (GLushort *) texImage->Data + yoffset * mml->width;
+   /* Reset duplicate markers on frame change */
+   if (ti->upload_stamp[FX_TMU0] != fxMesa->frame_no &&
+	   ti->upload_stamp[FX_TMU1] != fxMesa->frame_no)
+   {
+	   ti->last_uploaded_level[FX_TMU0] = -1;
+	   ti->last_uploaded_level[FX_TMU1] = -1;
+   }
+
+   /* Compute byte-accurate row pointer */
+   {
+	   int bpp = 2;
+	   switch (ti->info.format)
+	   {
+		   case GR_TEXFMT_INTENSITY_8:
+		   case GR_TEXFMT_P_8:
+		   case GR_TEXFMT_ALPHA_8:
+			   bpp = 1;
+			   break;
+		   case GR_TEXFMT_ARGB_8888:
+			   bpp = 4;
+			   break;
+		   default:
+			   /* Most uncompressed Glide formats here are 16-bit (2 bytes) */
+			   bpp = 2;
+			   break;
+	   }
+	   data = (void *)((GLubyte *)texImage->Data + (yoffset * mml->width * bpp));
+   }
 
    switch (tmu) {
    case FX_TMU0:
@@ -676,7 +738,9 @@ fxTMReloadSubMipMapLevel(fxMesaContext fxMesa,
 					 ti->info.format,
 					 GR_MIPMAPLEVELMASK_BOTH, data,
 					 yoffset, yoffset + height - 1);
-      break;
+	  ti->upload_stamp[tmu] = fxMesa->frame_no;
+	  ti->last_uploaded_level[tmu] = level;
+	  break;
    case FX_TMU_SPLIT:
       grTexDownloadMipMapLevelPartial(GR_TMU0,
 					 ti->tm[FX_TMU0]->startAddr,
@@ -697,7 +761,9 @@ fxTMReloadSubMipMapLevel(fxMesaContext fxMesa,
 					 ti->info.format,
 					 GR_MIPMAPLEVELMASK_EVEN, data,
 					 yoffset, yoffset + height - 1);
-      break;
+	  ti->upload_stamp[FX_TMU0] = fxMesa->frame_no;
+	  ti->upload_stamp[FX_TMU1] = fxMesa->frame_no;
+	  break;
    case FX_TMU_BOTH:
       grTexDownloadMipMapLevelPartial(GR_TMU0,
 					 ti->tm[FX_TMU0]->startAddr,
@@ -718,7 +784,9 @@ fxTMReloadSubMipMapLevel(fxMesaContext fxMesa,
 					 ti->info.format,
 					 GR_MIPMAPLEVELMASK_BOTH, data,
 					 yoffset, yoffset + height - 1);
-      break;
+	  ti->upload_stamp[FX_TMU0] = fxMesa->frame_no;
+	  ti->upload_stamp[FX_TMU1] = fxMesa->frame_no;
+	  break;
    default:
       fprintf(stderr, "fxTMReloadSubMipMapLevel: INTERNAL ERROR: wrong tmu (%d)\n", tmu);
       fxCloseHardware();

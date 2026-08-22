@@ -257,6 +257,15 @@ typedef struct
 }
 tfxMipMapLevel;
 
+/* Texture invalidation reasons, for TMU management */
+typedef enum
+{
+	INVALIDATE_NONE = 0,
+	INVALIDATE_PARAMS = 1,  // Base/max level, min filter
+	INVALIDATE_PALETTE = 2, // Palette changes
+	INVALIDATE_DATA = 4     // New texture data
+} tfxInvalidateReason;
+
 /*
  * TDFX-specific texture object data.  This hangs off of the
  * struct gl_texture_object DriverData pointer.
@@ -293,6 +302,19 @@ typedef struct tfxTexInfo_t
 
    GLboolean fixedPalette;
    GLboolean validated;
+
+   GLboolean padded;
+
+   /* NEJC SOF: New fields for TMU affinity and pinning */
+   GLuint upload_stamp[2];   /* last frame this texture was uploaded to TMU n */
+
+   /* Streaming texture detection to avoid CPU S3TC/FXT1 overhead */
+   GLboolean streaming;           /* set true if updated almost every frame */
+   GLuint    stream_updates;      /* number of consecutive frame updates */
+   GLuint    last_update_frame;   /* last frame index this texture got TexImage */
+
+   /* Per-frame duplicate-upload suppression */
+   GLint     last_uploaded_level[2]; /* last full/partial level uploaded on TMU n in current frame */
 }
 tfxTexInfo;
 
@@ -512,6 +534,7 @@ struct tfxMesaContext
    GLboolean haveZBuffer;
    GLboolean haveDoubleBuffer;
    GLboolean haveGlobalPaletteTexture;
+   GLboolean keepResidentOnInvalidate; /* Keep textures resident on fxTexInvalidate (avoid evict+reupload on param changes) */
    GLint swapInterval;
    GLint maxPendingSwapBuffers;
 
@@ -540,6 +563,12 @@ struct tfxMesaContext
    FxBool HaveTexus2;	/* Texus 2 - FXT1 */
    struct tdfx_glide Glide;
    char rendererString[100];
+
+   /* NEJC SOF: Frame counter and TMU state cache */
+   GLuint frame_no;     /* increment once per SwapBuffers */
+
+   /* Skip combine - Last combine tracking */
+   struct gl_texture_object *lastCombineTex[2]; /* one per texture unit */
 };
 
 

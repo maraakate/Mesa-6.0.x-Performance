@@ -359,6 +359,9 @@ fxMesaCreateContext(GLuint win,
                       Glide->txMipQuantize &&
                       Glide->txPalToNcc && !getenv("MESA_FX_IGNORE_TEXUS2");
 
+ /* Defaults enabled: keep textures resident on invalidate */
+ fxMesa->keepResidentOnInvalidate = GL_TRUE;
+
  /*
   * Pixel tables are used during pixel read-back
   * Either initialize them for RGB or BGR order;
@@ -876,6 +879,13 @@ fxMesaSwapBuffers(void)
 
 	 fxMesaCurrentCtx->stats.swapBuffer++;
       }
+	  /* Increment frame counter */
+	  fxMesaCurrentCtx->frame_no++;
+
+	  /* Reset combine guard here too */
+	  fxMesaCurrentCtx->lastCombineTex[0] = NULL;
+	  fxMesaCurrentCtx->lastCombineTex[1] = NULL;
+	  fxMesaCurrentCtx->lastUnitsMode = FX_UM_NONE;
    }
 }
 

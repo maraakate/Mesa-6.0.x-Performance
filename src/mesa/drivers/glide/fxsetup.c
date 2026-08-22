@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Mesa 3-D graphics library
  * Version:  4.0
  *
@@ -480,6 +480,25 @@ fxSetupSingleTMU_NoLock(fxMesaContext fxMesa, struct gl_texture_object *tObj)
       grTexMipMapMode(tmu, ti->mmMode, FXFALSE);
 
       grTexSource(tmu, ti->tm[tmu]->startAddr, GR_MIPMAPLEVELMASK_BOTH, &(ti->info));
+      /* If texture was invalidated but kept resident, push new CPU-side data now.
+      Compensating mechanism for keepResidentOnInvalidate
+
+      1. Checks if the texture is still loaded in TMU memory (ti->isInTM).
+      2. Checks if Mesa marked it invalidated (!ti->validated).
+      3. If both are true → it reuploads all mipmap levels back into the TMU in place.
+      Essentially performing a "refresh" rather than a full fxTMMoveOutTM + MoveInTM cycle.
+      4. Marks it as valid again (ti->validated = GL_TRUE).
+      */
+      if (ti->isInTM && !ti->validated)
+      {
+         int l, i;
+         for (i = FX_largeLodValue(ti->info), l = ti->minLevel;
+              i <= FX_smallLodValue(ti->info); i++, l++)
+         {
+            fxTMReloadMipMapLevel(fxMesa, tObj, l);
+         }
+         ti->validated = GL_TRUE;
+      }
    }
 }
 
@@ -595,10 +614,16 @@ fxSetupTextureSingleTMU_NoLock(GLcontext * ctx, GLuint textureset)
    else
       unitsmode = fxGetTexSetConfiguration(ctx, NULL, tObj);
 
-/*    if(fxMesa->lastUnitsMode==unitsmode) */
-/*      return; */
+	/* Safe skip: only when both combine mode and bound texture match */
+   if (fxMesa->lastUnitsMode == unitsmode &&
+	   fxMesa->lastCombineTex[textureset] == tObj)
+   {
+	   return;
+   }
 
+   /* Update the guard keys */
    fxMesa->lastUnitsMode = unitsmode;
+   fxMesa->lastCombineTex[textureset] = tObj;
 
    fxMesa->stw_hint_state = 0;
    FX_grHints_NoLock(GR_HINT_STWHINT, 0);
@@ -973,10 +998,18 @@ fxSetupTextureDoubleTMU_NoLock(GLcontext * ctx)
 
    unitsmode = fxGetTexSetConfiguration(ctx, tObj0, tObj1);
 
-/*    if(fxMesa->lastUnitsMode==unitsmode) */
-/*      return; */
+  /* Safe skip: only when both combine mode and bound texture match */
+   if (fxMesa->lastUnitsMode == unitsmode &&
+	   fxMesa->lastCombineTex[0] == tObj0 &&
+	   fxMesa->lastCombineTex[1] == tObj1)
+   {
+	   return;
+   }
 
+   /* Update the guard keys */
    fxMesa->lastUnitsMode = unitsmode;
+   fxMesa->lastCombineTex[0] = tObj0;
+   fxMesa->lastCombineTex[1] = tObj1;
 
    fxMesa->stw_hint_state |= GR_STWHINT_ST_DIFF_TMU1;
    FX_grHints_NoLock(GR_HINT_STWHINT, fxMesa->stw_hint_state);
@@ -1282,6 +1315,8 @@ fxSetupTextureNone_NoLock(GLcontext * ctx)
                   GR_COMBINE_OTHER_NONE,
                   FXFALSE);
 
+   /* Reset on full TMU flush*/
+   fxMesa->lastCombineTex[0] = fxMesa->lastCombineTex[1] = NULL;
    fxMesa->lastUnitsMode = FX_UM_NONE;
 }
 
@@ -1980,10 +2015,9 @@ fxDDFrontFace(GLcontext * ctx, GLenum mode)
 void
 fxSetupCull(GLcontext * ctx)
 {
-   fxMesaContext fxMesa = FX_CONTEXT(ctx);
    GrCullMode_t mode = GR_CULL_DISABLE;
 
-   if (ctx->Polygon.CullFlag && (fxMesa->raster_primitive == GL_TRIANGLES)) {
+   if (ctx->Polygon.CullFlag) {
       switch (ctx->Polygon.CullFaceMode) {
       case GL_BACK:
 	 if (ctx->Polygon.FrontFace == GL_CCW)
@@ -1997,19 +2031,10 @@ fxSetupCull(GLcontext * ctx)
 	 else
 	    mode = GR_CULL_NEGATIVE;
 	 break;
-      case GL_FRONT_AND_BACK:
-	 /* Handled as a fallback on triangles in tdfx_tris.c */
-	 return;
-      default:
-	 ASSERT(0);
-	 break;
       }
    }
 
-   if (fxMesa->cullMode != mode) {
-      fxMesa->cullMode = mode;
       grCullMode(mode);
-   }
 }
 
 

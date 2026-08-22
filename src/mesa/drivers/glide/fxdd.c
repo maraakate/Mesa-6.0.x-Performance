@@ -1284,8 +1284,16 @@ fxDDInitFxMesaContext(fxMesaContext fxMesa)
    fxMesa->stats.texUpload = 0;
    fxMesa->stats.memTexUpload = 0;
 
+   /* Initialize frame counter and TMU caches */
+   fxMesa->frame_no = 0;
+
    fxMesa->tmuSrc = FX_TMU_NONE;
    fxMesa->lastUnitsMode = FX_UM_NONE;
+
+   /* SKIP COMBINE - Init lastCombine tracking */
+   fxMesa->lastCombineTex[0] = NULL;
+   fxMesa->lastCombineTex[1] = NULL;
+
    fxTMInit(fxMesa);
 
    /* FX units setup */
