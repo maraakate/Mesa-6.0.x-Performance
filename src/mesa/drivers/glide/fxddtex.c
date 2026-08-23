@@ -124,6 +124,7 @@ fxAllocTexObjData(fxMesaContext fxMesa)
    }
 
    ti->validated = GL_FALSE;
+   ti->dirtyImages = GL_FALSE;
    ti->isInTM = GL_FALSE;
 
    ti->whichTMU = FX_TMU_NONE;
@@ -392,6 +393,14 @@ fxDDTexDel(GLcontext * ctx, struct gl_texture_object *tObj)
 
    FREE(ti);
    tObj->DriverData = NULL;
+
+   /* Nejc: the combine guard keys off this pointer, and the next texture
+	* can be allocated at the same address - drop the keys. */
+   if (fxMesa->lastCombineTex[0] == tObj)
+	   fxMesa->lastCombineTex[0] = NULL;
+   if (fxMesa->lastCombineTex[1] == tObj)
+	   fxMesa->lastCombineTex[1] = NULL;
+   fxMesa->lastUnitsMode = FX_UM_NONE;
 
    /* Free mipmap images and the texture object itself */
    _mesa_delete_texture_object(ctx, tObj);
@@ -1544,7 +1553,13 @@ fxDDTexSubImage2D(GLcontext * ctx, GLenum target, GLint level,
 	   }
    }
    else
+   {
 	   fxTexInvalidate(ctx, texObj, INVALIDATE_NONE);
+	   /* Nejc: data changed but we may have stayed resident - the card copy
+		* is stale, so ask the setup path to push it. Separate from
+		* 'validated', which fxTexValidate() sets back to TRUE too early. */
+	   ti->dirtyImages = GL_TRUE;
+   }
 }
 
 
